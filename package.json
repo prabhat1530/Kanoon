@@ -1,6 +1,9 @@
 {
   "dependencies": {
+    "cheerio": "^1.0.0",
     "chromedriver": "^133.0.3",
+    "cli-table3": "^0.6.5",
+    "cloudscraper": "^4.6.0",
     "fs": "^0.0.1-security",
     "playwright": "^1.50.1",
     "puppeteer": "^24.3.0",

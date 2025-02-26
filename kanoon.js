@@ -1,65 +1,79 @@
-const puppeteer = require("puppeteer-extra");
-const StealthPlugin = require("puppeteer-extra-plugin-stealth");
+const cloudscraper = require("cloudscraper");
+const cheerio = require("cheerio");
 const xlsx = require("xlsx");
+const Table = require("cli-table3"); // For beautiful console output
 
-puppeteer.use(StealthPlugin());
-
-const BASE_URL = "https://indiankanoon.org/search/";
-const COURTS = {
-  "Allahabad High Court": "Allahabad",
-  "Bombay High Court": "Bombay",
-};
-const DATE_FILTERS = ["2024-01", "2024-02", "2024-03"];
+// Configuration
+const base_url = "https://indiankanoon.org/browse/";
+const courts = { "Allahabad High Court": "Allahabad", "Bombay High Court": "Bombay" };
+const dateFilters = ["2024-01", "2024-02", "2024-03"]; // Jan, Feb, Mar 2024
 
 async function scrapeData() {
-  const browser = await puppeteer.launch({ headless: false }); // Open real browser
-  const page = await browser.newPage();
   let data = [];
+  let table = new Table({
+    head: ["Court", "Case Title", "Bench", "Grey Box", "Judgement"],
+    colWidths: [25, 50, 30, 20, 50], // Adjust column widths
+    wordWrap: true,
+  });
 
-  for (const [courtName, courtParam] of Object.entries(COURTS)) {
-    for (const dateFilter of DATE_FILTERS) {
+  for (const [courtName, courtParam] of Object.entries(courts)) {
+    for (const dateFilter of dateFilters) {
       console.log(`🔍 Scraping ${courtName} for ${dateFilter}...`);
 
-      let url = `${BASE_URL}?formInput=court%3A${courtParam}+fromdate%3A${dateFilter}-01+todate%3A${dateFilter}-31`;
-      await page.goto(url, { waitUntil: "networkidle2" });
-      await page.waitForTimeout(5000); // Wait for Cloudflare challenge
+      let url = `${base_url}?formInput=court%3A${courtParam}+fromdate%3A${dateFilter}-01+todate%3A${dateFilter}-31`;
 
-      const caseLinks = await page.evaluate(() =>
-        Array.from(document.querySelectorAll("a.result_title")).map(link => link.href)
-      );
+      try {
+        let body = await cloudscraper.get(url);
+        let $ = cheerio.load(body);
 
-      if (caseLinks.length === 0) {
-        console.log(`⚠ No cases found for ${courtName} in ${dateFilter}`);
-        continue;
-      }
-
-      for (let caseUrl of caseLinks) {
-        console.log(`📄 Fetching Case: ${caseUrl}`);
-        await page.goto(caseUrl, { waitUntil: "networkidle2" });
-        await page.waitForTimeout(3000);
-
-        const caseDetails = await page.evaluate(() => {
-          const getText = (selector) => document.querySelector(selector)?.innerText?.trim() || "N/A";
-          return {
-            title: getText(".docsource_main"),
-            bench: getText(".doc_bench"),
-            greyBox: getText("#pre_1"),
-            judgement: getText(".judgments"),
-          };
+        // Get all case links
+        let caseLinks = [];
+        $("a.result_title").each((i, el) => {
+          caseLinks.push("https://indiankanoon.org" + $(el).attr("href"));
         });
 
-        data.push([
-          courtName,
-          caseDetails.title,
-          caseDetails.bench,
-          caseDetails.greyBox,
-          caseDetails.judgement,
-        ]);
+        if (caseLinks.length === 0) {
+          console.log(`⚠ No cases found for ${courtName} in ${dateFilter}`);
+          continue;
+        }
+
+        for (let caseUrl of caseLinks) {
+          console.log(`📜 Fetching Case: ${caseUrl}`);
+          let caseBody = await cloudscraper.get(caseUrl);
+          let casePage = cheerio.load(caseBody);
+
+          let caseDetails = {
+            title: casePage(".docsource_main").text().trim() || "N/A",
+            bench: casePage(".doc_bench").text().trim() || "N/A",
+            greyBox: casePage("#pre_1").text().trim() || "N/A",
+            judgement: casePage(".judgments").text().trim() || "N/A",
+          };
+
+          // Format and add data to the table
+          table.push([
+            courtName,
+            caseDetails.title.substring(0, 50), // Truncate long text
+            caseDetails.bench.substring(0, 30),
+            caseDetails.greyBox.substring(0, 20),
+            caseDetails.judgement.substring(0, 50),
+          ]);
+
+          data.push([
+            courtName,
+            caseDetails.title,
+            caseDetails.bench,
+            caseDetails.greyBox,
+            caseDetails.judgement,
+          ]);
+        }
+      } catch (err) {
+        console.log(`❌ Error scraping ${courtName} - ${dateFilter}:`, err.message);
       }
     }
   }
 
-  await browser.close();
+  console.log("\n📊 Scraped Cases:");
+  console.log(table.toString()); // Print formatted table to console
   saveToExcel(data);
 }
 
@@ -71,9 +85,9 @@ function saveToExcel(data) {
   ]);
   const workbook = xlsx.utils.book_new();
   xlsx.utils.book_append_sheet(workbook, worksheet, "Cases");
-  xlsx.writeFile(workbook, "court_cases.csv");
+  xlsx.writeFile(workbook, "court_cases.xlsx");
   console.log("✅ Data saved to court_cases.xlsx");
 }
 
 // Run Scraper
-scrapeData().catch(console.error);
+scrapeData();
